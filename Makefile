@@ -1,4 +1,5 @@
 
+CC = gcc -std=gnu99
 BINS = colors
 OBJECTS_colors = colors.o
 
@@ -8,10 +9,10 @@ LIBS=`pkg-config --libs gtk+-2.0`
 all: $(BINS)
 
 colors: $(OBJECTS_colors)
-	gcc -o colors $(OBJECTS_colors) $(LIBS)
+	$(CC) -o colors $(OBJECTS_colors) $(LIBS)
 
 colors.o: colors.c
-	gcc $(INCLUDE) -c colors.c
+	$(CC) $(INCLUDE) -c colors.c
 
 clean:
 	rm -vf $(BINS) $(OBJECTS_colors)

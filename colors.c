@@ -4,6 +4,12 @@
 
 
 
+#define TABLES_COUNT    3
+#define POINT_RADIUS    4
+
+
+
+
 struct calc_data_;
 struct table_;
 struct window_main_;
@@ -22,10 +28,13 @@ struct calc_data_ {
 };
 
 struct table_ {
-	int drag;
 	GtkAllocation alloc;
 	double color[3];
 	double y1, y2;
+	double gx0, gy0, gx1, gy1;
+	double cpy0, cpy1;
+	guint16* color1;
+	guint16* color2;
 };
 
 struct window_main_ {
@@ -34,8 +43,8 @@ struct window_main_ {
 	GdkColor color1;
 	GdkColor color2;
 	table tables[3];
-	double x1, y1, x2, y2;
-	int state;
+	table* table_change;
+	guint16* color_change;
 };
 
 
@@ -44,6 +53,7 @@ struct window_main_ {
 void calc_circle(window_main* wm, calc_data* cd);
 void draw_circle(window_main* wm, cairo_t* c, GtkAllocation* allocation, calc_data* cd);
 void draw_circle_and_tables(window_main* wm, cairo_t* c, GtkAllocation* allocation);
+void draw_point(cairo_t* c, double x, double y);
 void draw_table(table* tbl, window_main* wm, cairo_t* c, calc_data* cd);
 void draw_tables(window_main* wm, cairo_t* c, GtkAllocation* alloc_tables, calc_data* cd);
 gboolean drawing_area_button_press_event(GtkWidget *widget,
@@ -53,9 +63,10 @@ gboolean drawing_area_button_release_event(GtkWidget *widget,
                GdkEventButton *event,
                window_main* wm);
 gboolean drawing_area_motion_notify_event(GtkWidget *widget,
-               GdkEvent *event,
+               GdkEventButton *event,
                window_main* wm);
 static gboolean expose_event(GtkWidget* widget, GdkEventExpose* event, window_main* wm);
+void tables_press(window_main* wm, table* tbl, double x, double y, int state);
 void window_main_create(window_main* wm);
 
 
@@ -63,10 +74,15 @@ void window_main_create(window_main* wm);
 
 void window_main_create(window_main* wm)
 {
-	for (int i = 0; i <= sizeof(wm->tables)/sizeof(wm->tables[0]); ++i)
-		wm->tables[i].drag = 0;
+	wm->tables[0].color1 = &wm->color1.red;
+	wm->tables[0].color2 = &wm->color2.red;
+	wm->tables[1].color1 = &wm->color1.green;
+	wm->tables[1].color2 = &wm->color2.green;
+	wm->tables[2].color1 = &wm->color1.blue;
+	wm->tables[2].color2 = &wm->color2.blue;
 
-	wm->state = 0;
+	wm->table_change = NULL;
+	wm->color_change = NULL;
 
 	wm->window_main = gtk_window_new(GTK_WINDOW_TOPLEVEL);
 	wm->drawing_area = gtk_drawing_area_new();
@@ -117,14 +133,6 @@ static gboolean expose_event(GtkWidget* widget, GdkEventExpose* event, window_ma
 
 	draw_circle_and_tables(wm, c, &allocation);
 
-	if (wm->state == 2) {
-		printf("draw! \n");
-		cairo_set_source_rgb(c, 0.8, 0.8, 0.8);
-		cairo_move_to(c, wm->x1, wm->y1);
-		cairo_line_to(c, wm->x2, wm->y2);
-		cairo_stroke(c);
-	}
-
 	cairo_destroy(c);
 }
 
@@ -149,7 +157,7 @@ void draw_circle_and_tables(window_main* wm, cairo_t* c, GtkAllocation* allocati
 
 void calc_circle(window_main* wm, calc_data* cd)
 {
-	double sectors_count = 20;
+	double sectors_count = 16;
 	double sector_max;
 	int i;
 
@@ -157,7 +165,7 @@ void calc_circle(window_main* wm, calc_data* cd)
 	cd->sectors_count = sectors_count;
 	sector_max = sectors_count - 1;
 	
-	for (i = 0; i < 3; ++i)
+	for (i = 0; i < TABLES_COUNT; ++i)
 	{
 		cd->x1[i] = 0;
 		cd->x2[i] = sector_max;
@@ -171,7 +179,7 @@ void calc_circle(window_main* wm, calc_data* cd)
 	cd->y2[1] = ((double) wm->color2.green) / 65535.0;
 	cd->y2[2] = ((double) wm->color2.blue) / 65535.0;
 
-	for (i = 0; i < 3; ++i)
+	for (i = 0; i < TABLES_COUNT; ++i)
 	{
 		cd->a[i] = (cd->y2[i] - cd->y1[i]) / cd->x2[i];
 		cd->b[i] = cd->y1[i];
@@ -192,7 +200,7 @@ void draw_circle(window_main* wm, cairo_t* c, GtkAllocation* allocation, calc_da
 	
 	for (cur_sector = 0, angle1 = 0; cur_sector < cd->sectors_count; ++cur_sector)
 	{
-		for (i = 0; i < 3; ++i)
+		for (i = 0; i < TABLES_COUNT; ++i)
 			y[i] = cd->a[i]*cur_sector + cd->b[i];
 
 		angle2 = 2 * (cur_sector+1) * M_PI / cd->sectors_count;
@@ -224,7 +232,7 @@ void draw_circle(window_main* wm, cairo_t* c, GtkAllocation* allocation, calc_da
 
 void draw_tables(window_main* wm, cairo_t* c, GtkAllocation* alloc_tables, calc_data* cd)
 {
-	int interval = 20;
+	int interval = 15;
 	int y, i;
 	GtkAllocation alloc;
 
@@ -232,9 +240,9 @@ void draw_tables(window_main* wm, cairo_t* c, GtkAllocation* alloc_tables, calc_
 	alloc.x = alloc_tables->x;
 	alloc.y = alloc_tables->y;
 	alloc.width = alloc_tables->width;
-	alloc.height = (alloc_tables->height - interval*2) / 3;
+	alloc.height = (alloc_tables->height - interval*2) / TABLES_COUNT;
 
-	for (i = 0; i < 3; ++i) {
+	for (i = 0; i < TABLES_COUNT; ++i) {
 		wm->tables[i].alloc.x = alloc.x;
 		wm->tables[i].alloc.y = alloc.y;
 		wm->tables[i].alloc.width = alloc.width;
@@ -270,11 +278,20 @@ void draw_tables(window_main* wm, cairo_t* c, GtkAllocation* alloc_tables, calc_
 void draw_table(table* tbl, window_main* wm, cairo_t* c, calc_data* cd)
 {
 	int i, x, y0, y1;
-	int text_offset = 30;
+	int text_offset = 3;
+	const int fig_offset_x1 = 25;
+	const int fig_offset_x2 = 10;
+	const int fig_offset_y1 = 15;
+	const int fig_offset_y2 = 25;
 	char buf[50];
 
 
 	cairo_set_line_width(c, 1);
+
+	tbl->gx0 = tbl->alloc.x + fig_offset_x1;
+	tbl->gx1 = tbl->alloc.x + tbl->alloc.width - fig_offset_x2;
+	tbl->gy0 = tbl->alloc.y + fig_offset_y1;
+	tbl->gy1 = tbl->alloc.y + tbl->alloc.height - fig_offset_y2;
 
 	cairo_rectangle(c,
 		tbl->alloc.x,
@@ -282,79 +299,126 @@ void draw_table(table* tbl, window_main* wm, cairo_t* c, calc_data* cd)
 		tbl->alloc.width,
 		tbl->alloc.height);
 
+	cairo_rectangle(c,
+		tbl->gx0,
+		tbl->gy0,
+		tbl->gx1 - tbl->gx0,
+		tbl->gy1 - tbl->gy0);
+
 	cairo_set_source_rgb(c, 1, 1, 1);
 	cairo_fill_preserve(c);
 	cairo_set_source_rgb(c, 0, 0, 0);
 	cairo_stroke(c);
 
-	y0 = tbl->alloc.y;
-	y1 = tbl->alloc.y + tbl->alloc.height;
-
 	cairo_set_source_rgb(c, 0.8, 0.8, 0.8);
 
 	for (i = 1; i < cd->sectors_count - 1; ++i) {
-		x = tbl->alloc.x + i * tbl->alloc.width / (cd->sectors_count - 1);
-		cairo_move_to(c, x, y0);
-		cairo_line_to(c, x, y1);
+		x = tbl->gx0 + i * (tbl->gx1 - tbl->gx0) / (cd->sectors_count - 1);
+		cairo_move_to(c, x, tbl->gy0);
+		cairo_line_to(c, x, tbl->gy1);
 		cairo_stroke(c);
 	}
 
 	cairo_set_source_rgb(c, tbl->color[0], tbl->color[1], tbl->color[2]);
 
 	cairo_move_to(c,
-		tbl->alloc.x,
-		tbl->alloc.y + tbl->alloc.height - tbl->y1 * tbl->alloc.height);
+		tbl->gx0,
+		tbl->gy0 + (tbl->gy1 - tbl->gy0)*(1-tbl->y1));
 	cairo_line_to(c,
-		tbl->alloc.x + tbl->alloc.width,
-		tbl->alloc.y + tbl->alloc.height - tbl->y2 * tbl->alloc.height);
+		tbl->gx1,
+		tbl->gy0 + (tbl->gy1 - tbl->gy0)*(1-tbl->y2));
 	cairo_stroke(c);
 
 	cairo_move_to(c,
-		tbl->alloc.x - text_offset,
-		tbl->alloc.y + tbl->alloc.height - tbl->y1 * tbl->alloc.height);
+		tbl->alloc.x + text_offset,
+		tbl->gy0 + (tbl->gy1 - tbl->gy0)*(1-tbl->y1));
 	sprintf(buf, "%.0f", tbl->y1 * 255);
 	cairo_show_text(c, buf);
 
 	cairo_move_to(c,
-		tbl->alloc.x - text_offset,
-		tbl->alloc.y + tbl->alloc.height - tbl->y2 * tbl->alloc.height);
+		tbl->alloc.x + text_offset,
+		tbl->gy0 + (tbl->gy1 - tbl->gy0)*(1-tbl->y2));
 	sprintf(buf, "%.0f", tbl->y2 * 255);
 	cairo_show_text(c, buf);
 
 	cairo_fill_preserve (c);
 	cairo_stroke (c);
+
+	tbl->cpy0 = tbl->gy0 + (tbl->gy1 - tbl->gy0)*(1-tbl->y1);
+	tbl->cpy1 = tbl->gy0 + (tbl->gy1 - tbl->gy0)*(1-tbl->y2);
+
+	draw_point(c, tbl->gx0, tbl->cpy0);
+	draw_point(c, tbl->gx1, tbl->cpy1);
 }
 
 gboolean drawing_area_button_press_event(GtkWidget *widget,
                GdkEventButton *event, window_main* wm)
 {
-	wm->state = wm->state % 2 + 1;
-
-	switch (wm->state) {
-	case 1:
-		wm->x1 = event->x;
-		wm->y1 = event->y;
-		g_print("s1: %.2f %.2f\n", event->x, event->y);
-		break;
-	case 2:
-		wm->x2 = event->x;
-		wm->y2 = event->y;
-		g_print("s2: %.2f %.2f\n", event->x, event->y);
-		break;
-	}
-
-	gtk_widget_queue_draw (wm->drawing_area);
+	tables_press(wm, wm->tables, event->x, event->y, 1);
 }
 
 gboolean drawing_area_button_release_event(GtkWidget *widget,
                GdkEventButton *event, window_main* wm)
 {
+	tables_press(wm, wm->tables, event->x, event->y, 3);
 }
 
 gboolean drawing_area_motion_notify_event(GtkWidget *widget,
-               GdkEvent *event,
+               GdkEventButton *event,
                window_main* wm)
 {
+	tables_press(wm, wm->tables, event->x, event->y, 2);
+}
+
+void tables_press(window_main* wm, table* tbl, double x, double y, int state)
+{
+	#define OVER_THE_POINT(x, y, px, py)    \
+		((px) - POINT_RADIUS <= (x) && \
+		(x) <= (px) + POINT_RADIUS && \
+		(py) - POINT_RADIUS <= (y) && \
+		(y) <= (py) + POINT_RADIUS)
+
+	if (state == 1) {
+		for (int i = 0; i < TABLES_COUNT; ++i) {
+			if (OVER_THE_POINT(x, y, tbl[i].gx0, tbl[i].cpy0)) {
+				wm->table_change = tbl + i;
+				wm->color_change = tbl[i].color1;
+			}
+			if (OVER_THE_POINT(x, y, tbl[i].gx1, tbl[i].cpy1)) {
+				wm->table_change = tbl + i;
+				wm->color_change = tbl[i].color2;
+			}
+		}
+	}
+
+	if (wm->table_change == NULL)
+		return ;
+
+	table* tc = wm->table_change;
+	guint16* cc = wm->color_change;
+
+	if (y <= tc->gy0)
+		*cc = 0xFFFF;
+	else if (tc->gy0 < y && y < tc->gy1)
+		*cc = (tc->gy1 - y) * 65535 / (tc->gy1 - tc->gy0);
+	else
+		*cc = 0x0000;
+
+	if (state == 3) {
+		wm->table_change = NULL;
+		wm->color_change = NULL;
+	}
+
+	gtk_widget_queue_draw (wm->drawing_area);
+}
+
+void draw_point(cairo_t* c, double x, double y)
+{
+	cairo_arc(c, x, y, POINT_RADIUS, 0, 2*M_PI);
+	cairo_set_source_rgb(c, 1, 1, 1); 
+	cairo_fill_preserve(c);
+	cairo_set_source_rgb(c, 0, 0, 0);
+	cairo_stroke(c);
 }
 
 int main(int argc, char* argv[])
